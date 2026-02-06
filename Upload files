@@ -1,0 +1,692 @@
+daily_extraction.py
+
+import feedparser
+from datetime import datetime
+from openpyxl import load_workbook
+import os
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+from email.mime.application import MIMEApplication
+
+EXCEL_FILE = "Daily_Article_Extract.xlsx"
+SHEET_NAME = "Daily News"
+
+EXTRACTION_KEYWORDS = {
+    "Executive Appointments": ["appoints", "appointed", "joins", "joins as", "hired", "names", "named as", "taps", "tapped as", "elevates", "promoted to", "takes role as", "becomes"],
+    "Executive Exits": ["exits", "leaves", "departs", "steps down", "stepping down", "resigns", "resigned", "out as"],
+    "New Company/Launch": ["launches", "launched", "new company", "startup", "founded", "founded by", "new division", "new studio", "new production", "new streaming", "channels", "FAST channel"],
+    "Acquisitions/M&A": ["acquires", "acquired", "acquiring", "acquire", "acquisition", "takes over", "buys", "buying", "purchase", "purchased", "sold to", "sale to", "merger", "merged", "merges"],
+    "Partnerships/Alliances": ["partnership", "partners", "partners with", "partnering", "collaboration", "ally", "alliance", "strategic alliance", "pact", "pacts", "exclusive deal", "first-look deal"],
+    "Investments/Funding": ["investment", "funding", "raises", "funding round", "series a", "series b", "series c", "stake", "stakes", "investor", "invested", "backs"],
+    "Content Deals": ["book deal", "book adaptation", "adapts", "adapted from", "produces", "produces series", "platform deal", "streaming deal", "rights deal"],
+    "Production News": ["shooting starts", "filming starts", "begins filming", "filming location", "production begins", "green lit", "greenlit", "release date", "set to premiere", "premieres", "inks", "inked"],
+    "Ownership/Leadership": ["owner", "ownership", "owner stake", "takes stake", "board", "appointed to board", "leads", "led by", "founder", "founded by"]
+}
+
+def categorize_article(title, summary):
+    full_text = (title + " " + summary).lower()
+    for category, keywords in EXTRACTION_KEYWORDS.items():
+        for keyword in keywords:
+            if keyword.lower() in full_text:
+                return category
+    return "Other"
+
+def parse_rss_feed(feed_url):
+    feed = feedparser.parse(feed_url)
+    filtered_articles = []
+    for entry in feed.entries:
+        title = entry.get('title', 'No title')
+        link = entry.get('link', 'No link')
+        published = entry.get('published', 'No date')
+        summary = entry.get('summary', '')
+        category = categorize_article(title, summary)
+        if category != "Other":
+            filtered_articles.append({
+                "Title": title,
+                "URL": link,
+                "Date": published,
+                "Category": category,
+                "Summary": summary[:200]
+            })
+    return filtered_articles
+
+def get_existing_urls():
+    """Get all URLs already in Excel"""
+    existing_urls = set()
+    try:
+        wb = load_workbook(EXCEL_FILE)
+        ws = wb[SHEET_NAME]
+        
+        # Read column E (index 5, URL column)
+        for row in ws.iter_rows(min_row=2, max_row=ws.max_row):
+            url = row[4].value  # Column E = index 4
+            if url:
+                existing_urls.add(str(url).strip())
+    except Exception as e:
+        print(f"Debug: Error reading URLs: {e}")
+    
+    return existing_urls
+
+def append_articles_to_excel(all_articles):
+    """Append only NEW articles (no duplicates)"""
+    try:
+        # Get existing URLs
+        existing_urls = get_existing_urls()
+        print(f"Found {len(existing_urls)} existing URLs in Excel")
+        
+        # Filter out duplicates
+        new_articles = []
+        for article in all_articles:
+            if str(article["URL"]).strip() not in existing_urls:
+                new_articles.append(article)
+        
+        print(f"Found {len(new_articles)} NEW articles (filtered from {len(all_articles)})")
+        
+        if not new_articles:
+            print("No new articles to add")
+            return True, 0
+        
+        # Add to Excel
+        wb = load_workbook(EXCEL_FILE)
+        ws = wb[SHEET_NAME]
+        
+        today = datetime.now().strftime("%Y-%m-%d %H:%M")
+        for article in new_articles:
+            ws.append([
+                today,
+                article.get("Source", ""),
+                article.get("Category", ""),
+                article.get("Title", ""),
+                article.get("URL", ""),
+                article.get("Summary", "")
+            ])
+        
+        wb.save(EXCEL_FILE)
+        print(f"✅ Added {len(new_articles)} new articles to Excel")
+        return True, len(new_articles)
+        
+    except Exception as e:
+        print(f"Error: {e}")
+        return False, 0
+
+def send_email(new_count, total_count, categories):
+    """Send email with attachment"""
+    try:
+        sender_email = "Sender mail id"
+        sender_password = "z...........p"
+        recipient_email = "recipient_email"
+        
+        msg = MIMEMultipart()
+        msg["From"] = sender_email
+        msg["To"] = recipient_email
+        msg["Subject"] = f"✅ Daily Extraction - {new_count} NEW articles - {datetime.now().strftime('%Y-%m-%d')}"
+        
+        body = f"""Daily Article Extraction Report
+
+Status: ✅ Completed
+Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+
+NEW Articles Added: {new_count}
+Total Articles in Feed: {total_count}
+
+By Category:
+"""
+        for cat, count in sorted(categories.items()):
+            body += f"• {cat}: {count}\n"
+        
+        body += "\n📎 Excel file attached"
+        
+        msg.attach(MIMEText(body, "plain"))
+        
+        # Attach Excel
+        with open(EXCEL_FILE, "rb") as attachment:
+            part = MIMEApplication(attachment.read(), Name=EXCEL_FILE)
+            part["Content-Disposition"] = f"attachment; filename= {EXCEL_FILE}"
+            msg.attach(part)
+        
+        # Send
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+            server.login(sender_email, sender_password)
+            server.sendmail(sender_email, recipient_email, msg.as_string())
+        
+        print(f"✅ Email sent with {new_count} new articles")
+        return True
+        
+    except Exception as e:
+        print(f"Email error: {e}")
+        return False
+
+# Main
+print(f"\nStarting extraction: {datetime.now().strftime('%H:%M:%S')}")
+
+deadline_articles = parse_rss_feed("https://deadline.com/feed/")
+c21_articles = parse_rss_feed("https://c21media.net/feed/")
+
+all_articles = []
+for article in deadline_articles:
+    article["Source"] = "Deadline"
+    all_articles.append(article)
+for article in c21_articles:
+    article["Source"] = "C21Media"
+    all_articles.append(article)
+
+print(f"Total articles found: {len(all_articles)}")
+
+# Append (filters duplicates internally)
+success, new_count = append_articles_to_excel(all_articles)
+
+# Get categories
+categories = {}
+for article in all_articles:
+    cat = article["Category"]
+    categories[cat] = categories.get(cat, 0) + 1
+
+# Send email only if there are new articles
+if new_count > 0:
+    send_email(new_count, len(all_articles), categories)
+else:
+    print("No new articles - skipping email")
+
+print(f"Completed: {datetime.now().strftime('%H:%M:%S')}\n")
+
+
+todotvnews_extraction.py
+
+
+import requests
+from bs4 import BeautifulSoup
+from openpyxl import load_workbook
+from datetime import datetime
+import smtplib
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from email.mime.base import MIMEBase
+from email import encoders
+import os
+
+# Email Configuration
+SEND_EMAIL = True
+SENDER_EMAIL = "Sender mail"
+SENDER_PASSWORD = "z.........p"
+RECIPIENT_EMAIL = "recipient mail"
+SMTP_SERVER = "smtp.gmail.com"
+SMTP_PORT = 587
+
+def send_email_notification(new_count, total_count):
+    """Send email with Excel attachment"""
+    if not SEND_EMAIL:
+        print("Email disabled - Excel file saved successfully")
+        return
+    
+    try:
+        sender_email = SENDER_EMAIL
+        sender_password = SENDER_PASSWORD
+        recipient_email = RECIPIENT_EMAIL
+        
+        msg = MIMEMultipart()
+        msg["From"] = sender_email
+        msg["To"] = recipient_email
+        msg["Subject"] = f"✅ TodoTV News - {new_count} NEW items - {datetime.now().strftime('%Y-%m-%d')}"
+        
+        body = f"""TodoTV News Daily Report
+Status: ✅ Completed
+Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+
+NEW Items: {new_count}
+Total Items Extracted: {total_count}
+
+Source: https://www.todotvnews.com/
+"""
+        
+        msg.attach(MIMEText(body, "plain"))
+        
+        # Attach Excel file
+        filename = "TodoTV_News_Extract.xlsx"
+        with open(filename, "rb") as attachment:
+            part = MIMEBase("application", "octet-stream")
+            part.set_payload(attachment.read())
+            encoders.encode_base64(part)
+            part.add_header("Content-Disposition", f"attachment; filename={filename}")
+            msg.attach(part)
+        
+        # Send email
+        server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT)
+        server.starttls()
+        server.login(sender_email, sender_password)
+        server.send_message(msg)
+        server.quit()
+        
+        print(f"✅ Email sent with {new_count} items")
+        
+    except Exception as e:
+        print(f"Email error: {e}")
+
+def scrape_todotvnews():
+    """Scrape TodoTVNews.com for latest articles"""
+    print(f"Starting TodoTV News Extraction: {datetime.now().strftime('%H:%M:%S')}")
+    
+    articles = []
+    base_url = "https://www.todotvnews.com"
+    
+    try:
+        print("📡 Scraping todotvnews.com...")
+        
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+        
+        response = requests.get(base_url, headers=headers, timeout=30)
+        response.raise_for_status()
+        
+        soup = BeautifulSoup(response.content, 'html.parser')
+        
+        # Find article links
+        article_links = soup.find_all('a', href=True)
+        
+        seen_urls = set()
+        
+        for link in article_links:
+            url = link.get('href', '')
+            
+            # Filter for actual article URLs
+            if url.startswith('https://www.todotvnews.com/') and url != base_url and url not in seen_urls:
+                # Skip category pages, staff pages, etc.
+                skip_keywords = ['/category/', '/staff/', '/podcasts/', '/ediciones-digitales/', 
+                               '/tag/', '/author/', '/#', '/en/', '.png', '.jpg', '.gif']
+                
+                if any(skip in url for skip in skip_keywords):
+                    continue
+                
+                seen_urls.add(url)
+                
+                # Get title from link text or fetch the page
+                title = link.get_text(strip=True)
+                
+                if title and len(title) > 10:  # Valid title
+                    articles.append({
+                        'date': datetime.now().strftime('%Y-%m-%d %H:%M'),
+                        'source': 'todotvnews.com',
+                        'category': 'TV News',
+                        'url': url,
+                        'title': title,
+                        'summary': title  # Using title as summary for now
+                    })
+                
+                # Limit to prevent too many articles
+                if len(articles) >= 50:
+                    break
+        
+        print(f"   ✓ Found {len(articles)} articles")
+        
+    except Exception as e:
+        print(f"   ✗ Error scraping todotvnews: {e}")
+    
+    return articles
+
+def save_to_excel(articles, excel_file):
+    """Save articles to Excel file"""
+    
+    # Create or load Excel file
+    if os.path.exists(excel_file):
+        wb = load_workbook(excel_file)
+        if "TodoTV News" in wb.sheetnames:
+            ws = wb["TodoTV News"]
+        else:
+            ws = wb.create_sheet("TodoTV News")
+    else:
+        from openpyxl import Workbook
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "TodoTV News"
+        
+        # Add headers
+        ws.append(['Date Extracted', 'Source', 'Category', 'URL', 'Title', 'Summary'])
+    
+    # Get existing URLs
+    existing_urls = set()
+    for row in ws.iter_rows(min_row=2, max_row=ws.max_row, min_col=4, max_col=4):
+        if row[0].value:
+            existing_urls.add(row[0].value)
+    
+    print(f"Found {len(existing_urls)} existing URLs")
+    
+    # Filter new articles
+    new_articles = [art for art in articles if art['url'] not in existing_urls]
+    
+    print(f"Found {len(new_articles)} NEW articles (filtered from {len(articles)})")
+    
+    # Add new articles
+    for article in new_articles:
+        ws.append([
+            article['date'],
+            article['source'],
+            article['category'],
+            article['url'],
+            article['title'],
+            article['summary']
+        ])
+    
+    # Save
+    wb.save(excel_file)
+    
+    if new_articles:
+        print(f"✅ Added {len(new_articles)} articles to Excel")
+    else:
+        print("ℹ️ No new articles to add")
+    
+    return len(new_articles), len(articles)
+
+if __name__ == "__main__":
+    excel_file = "TodoTV_News_Extract.xlsx"
+    
+    # Scrape articles
+    all_articles = scrape_todotvnews()
+    
+    print(f"✅ Total: {len(all_articles)}")
+    
+    # Save to Excel
+    new_count, total_count = save_to_excel(all_articles, excel_file)
+    
+    # Send email if there are new articles
+    if new_count > 0:
+        send_email_notification(new_count, total_count)
+    else:
+        print("No new articles - Email not sent")
+    
+    print(f"Extraction completed: {datetime.now().strftime('%H:%M:%S')}")
+
+
+tv_entertainment_extraction.py
+
+from bs4 import BeautifulSoup
+import requests
+
+# ============================================================
+# EMAIL CONFIGURATION
+# ============================================================
+SEND_EMAIL = True
+SENDER_EMAIL = "Sender mail"
+SENDER_PASSWORD = "z.......p"
+RECIPIENT_EMAIL = "Recipient mail"
+SMTP_SERVER = "smtp.gmail.com"
+SMTP_PORT = 587
+
+import smtplib
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from email.mime.base import MIMEBase
+from email import encoders
+
+def send_email_with_attachment(subject, body, attachment_path):
+    """Send email with Excel attachment"""
+    if False:  # SEND_EMAIL check disabled
+        print("Email disabled - Excel file saved successfully")
+        return
+    
+    try:
+        # Create message
+        msg = MIMEMultipart()
+        msg['From'] = SENDER_EMAIL
+        msg['To'] = RECIPIENT_EMAIL
+        msg['Subject'] = subject
+        
+        # Add body
+        msg.attach(MIMEText(body, 'plain'))
+        
+        # Attach Excel file
+        with open(attachment_path, 'rb') as attachment:
+            part = MIMEBase('application', 'octet-stream')
+            part.set_payload(attachment.read())
+            encoders.encode_base64(part)
+            part.add_header('Content-Disposition', f'attachment; filename={os.path.basename(attachment_path)}')
+            msg.attach(part)
+        
+        # Send email
+        server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT)
+        server.starttls()
+        server.login(SENDER_EMAIL, SENDER_PASSWORD)
+        server.send_message(msg)
+        server.quit()
+        
+        print(f"✅ Email sent successfully to {RECIPIENT_EMAIL}")
+        
+    except Exception as e:
+        print(f"❌ Email failed: {str(e)}")
+
+from openpyxl import load_workbook, Workbook
+from openpyxl.styles import Font, PatternFill
+from datetime import datetime
+import os
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+from email.mime.application import MIMEApplication
+
+TV_EXCEL_FILE = "TV_Entertainment_Extract.xlsx"
+SHEET_NAME = "TV News"
+
+def scrape_fernsehserien():
+    print(f"📡 Scraping fernsehserien.de...")
+    try:
+        url = "https://www.fernsehserien.de/serien-starts/neue-serien"
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+        response = requests.get(url, headers=headers, timeout=15)
+        soup = BeautifulSoup(response.content, 'html.parser')
+        
+        articles = []
+        main = soup.find('main')
+        all_links = main.find_all('a', href=True)
+        seen_titles = set()
+        
+        for link in all_links:
+            href = link.get('href', '')
+            if not href.startswith('/') or '/serien-starts/' in href or 'news' in href:
+                continue
+            title = link.get_text(strip=True)
+            if len(title) < 3 or title in ['weiter', 'Highlights', 'neue Serien', '']:
+                continue
+            if title in seen_titles:
+                continue
+            seen_titles.add(title)
+            full_url = "https://www.fernsehserien.de" + href
+            parent = link.find_parent(['li', 'div'])
+            summary = ""
+            if parent:
+                desc = parent.find('p')
+                summary = desc.get_text(strip=True) if desc else ""
+            articles.append({
+                "Title": title,
+                "URL": full_url,
+                "Category": "TV Show",
+                "Summary": summary[:200],
+                "Source": "fernsehserien.de"
+            })
+        print(f"   ✓ Found {len(articles)} shows")
+        return articles
+    except Exception as e:
+        print(f"   ✗ Error: {str(e)}")
+        return []
+
+def scrape_tvcentral():
+    print(f"📡 Scraping tvcentral.com.au...")
+    try:
+        url = "https://www.tvcentral.com.au/"
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+        response = requests.get(url, headers=headers, timeout=15)
+        soup = BeautifulSoup(response.content, 'html.parser')
+        articles = []
+        items = soup.find_all('h2')
+        seen = set()
+        
+        # Keywords to skip (ads, footer, duplicates)
+        skip_keywords = ['advertisement', 'ad:', 'copyright', 'rights reserved', 'all rights', '©', 'footer']
+        
+        for item in items[:50]:
+            title = item.get_text(strip=True)
+            
+            # Skip empty/short titles
+            if not title or len(title) < 5:
+                continue
+            
+            # Skip ads and footer content
+            title_lower = title.lower()
+            if any(keyword in title_lower for keyword in skip_keywords):
+                continue
+            
+            # Skip duplicates
+            if title in seen:
+                continue
+            
+            # Get link
+            link_elem = item.find('a', href=True)
+            link = link_elem['href'] if link_elem else ""
+            
+            # Skip if no valid link
+            if not link or "No link" in link:
+                continue
+            
+            # Make full URL
+            if link and not link.startswith('http'):
+                link = "https://www.tvcentral.com.au" + link
+            
+            # Skip if still not valid
+            if not link.startswith('http'):
+                continue
+            
+            seen.add(title)
+            
+            # Get summary
+            summary_elem = item.find_next('p')
+            summary = summary_elem.get_text(strip=True) if summary_elem else ""
+            
+            articles.append({
+                "Title": title,
+                "URL": link,
+                "Category": "TV News",
+                "Summary": summary[:200],
+                "Source": "tvcentral.com.au"
+            })
+        
+        print(f"   ✓ Found {len(articles)} articles")
+        return articles
+    except Exception as e:
+        print(f"   ✗ Error: {str(e)}")
+        return []
+
+def get_existing_urls():
+    existing_urls = set()
+    try:
+        wb = load_workbook(TV_EXCEL_FILE)
+        ws = wb[SHEET_NAME]
+        for row in ws.iter_rows(min_row=2, max_row=ws.max_row):
+            url = row[3].value
+            if url:
+                existing_urls.add(str(url).strip())
+    except:
+        pass
+    return existing_urls
+
+def append_to_excel(all_articles):
+    try:
+        existing_urls = get_existing_urls()
+        print(f"Found {len(existing_urls)} existing URLs\n")
+        new_articles = [a for a in all_articles if str(a["URL"]).strip() not in existing_urls]
+        print(f"Found {len(new_articles)} NEW articles (filtered from {len(all_articles)})")
+        
+        if not new_articles:
+            print("No new articles to add\n")
+            return True, 0
+        
+        if os.path.exists(TV_EXCEL_FILE):
+            wb = load_workbook(TV_EXCEL_FILE)
+            ws = wb[SHEET_NAME]
+        else:
+            wb = Workbook()
+            ws = wb.active
+            ws.title = SHEET_NAME
+            headers = ["Date Extracted", "Source", "Category", "URL", "Title", "Summary"]
+            ws.append(headers)
+            header_fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
+            header_font = Font(bold=True, color="FFFFFF")
+            for cell in ws[1]:
+                cell.fill = header_fill
+                cell.font = header_font
+        
+        today = datetime.now().strftime("%Y-%m-%d %H:%M")
+        for article in new_articles:
+            ws.append([
+                today,
+                article.get("Source", ""),
+                article.get("Category", ""),
+                article.get("URL", ""),
+                article.get("Title", ""),
+                article.get("Summary", "")
+            ])
+        
+        ws.column_dimensions['A'].width = 18
+        ws.column_dimensions['B'].width = 18
+        ws.column_dimensions['C'].width = 15
+        ws.column_dimensions['D'].width = 35
+        ws.column_dimensions['E'].width = 40
+        ws.column_dimensions['F'].width = 40
+        wb.save(TV_EXCEL_FILE)
+        print(f"✅ Added {len(new_articles)} articles to Excel\n")
+        return True, len(new_articles)
+    except Exception as e:
+        print(f"Error: {e}")
+        return False, 0
+
+def send_email_notification(new_count, total_count, by_source):
+    # Email enabled
+    try:
+        sender_email = "Sender mail"
+        sender_password = "z......p"
+        recipient_email = "recipient mail"
+        msg = MIMEMultipart()
+        msg["From"] = sender_email
+        msg["To"] = recipient_email
+        msg["Subject"] = f"✅ TV Entertainment - {new_count} NEW items - {datetime.now().strftime('%Y-%m-%d')}"
+        body = f"""TV Entertainment Daily Report
+Status: ✅ Completed
+Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+NEW Items: {new_count}
+Total: {total_count}
+
+By Source:
+"""
+        for source, count in by_source.items():
+            body += f"• {source}: {count}\n"
+        body += "\n📎 Excel attached"
+        msg.attach(MIMEText(body, "plain"))
+        if os.path.exists(TV_EXCEL_FILE):
+            with open(TV_EXCEL_FILE, "rb") as attachment:
+                part = MIMEApplication(attachment.read(), Name=TV_EXCEL_FILE)
+                part["Content-Disposition"] = f"attachment; filename= {TV_EXCEL_FILE}"
+                msg.attach(part)
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+            server.login(sender_email, sender_password)
+            server.sendmail(sender_email, recipient_email, msg.as_string())
+        print(f"✅ Email sent with {new_count} items\n")
+        return True
+    except Exception as e:
+        print(f"Email error: {e}\n")
+        return False
+
+print(f"\nStarting TV Entertainment Extraction: {datetime.now().strftime('%H:%M:%S')}")
+fernseh_articles = scrape_fernsehserien()
+tvcentral_articles = scrape_tvcentral()
+all_articles = fernseh_articles + tvcentral_articles
+print(f"\n✅ Total: {len(all_articles)}")
+print(f"   fernsehserien: {len(fernseh_articles)}")
+print(f"   tvcentral: {len(tvcentral_articles)}\n")
+success, new_count = append_to_excel(all_articles)
+
+if new_count > 0:
+    by_source = {"fernsehserien.de": len(fernseh_articles), "tvcentral.com.au": len(tvcentral_articles)}
+    send_email_notification(new_count, len(all_articles), by_source)
+else:
+    print("No new articles - skipping email\n")
+
+print(f"Extraction completed: {datetime.now().strftime('%H:%M:%S')}\n")
+
