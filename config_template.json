@@ -1,0 +1,39 @@
+{
+  "gmail": {
+    "sender_email": "your-email@gmail.com",
+    "app_password": "xxxx xxxx xxxx xxxx",
+    "recipient_email": "recipient@email.com",
+    "smtp_server": "smtp.gmail.com",
+    "smtp_port": 465
+  },
+  "extraction": {
+    "timeout": 15,
+    "max_results": 40
+  },
+  "sources": {
+    "deadline": "https://deadline.com/feed/",
+    "c21media": "https://c21media.net/feed/",
+    "fernsehserien": "https://www.fernsehserien.de/serien-starts/neue-serien",
+    "tvcentral": "https://www.tvcentral.com.au/",
+    "todotvnews": "https://todotvnews.com/"
+  }
+}
+```
+
+4. Click "Commit new file"
+
+---
+
+### **3. Add requirements.txt**
+
+On GitHub:
+1. Click "Add file" → "Create new file"
+2. Name: `requirements.txt`
+3. Copy-paste this content:
+```
+beautifulsoup4==4.12.2
+requests==2.31.0
+feedparser==6.0.10
+openpyxl==3.10.10
+pandas==2.0.3
+lxml==4.9.3
